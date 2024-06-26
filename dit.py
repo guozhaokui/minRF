@@ -6,7 +6,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import torch_npu
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -57,7 +57,7 @@ class LabelEmbedder(nn.Module):
     def token_drop(self, labels, force_drop_ids=None):
         if force_drop_ids is None:
             drop_ids = torch.rand(labels.shape[0]) < self.dropout_prob
-            drop_ids = drop_ids.cuda()
+            drop_ids = drop_ids.npu()
             drop_ids = drop_ids.to(labels.device)
         else:
             drop_ids = force_drop_ids == 1
@@ -70,6 +70,25 @@ class LabelEmbedder(nn.Module):
             labels = self.token_drop(labels, force_drop_ids)
         embeddings = self.embedding_table(labels)
         return embeddings
+
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False):
+    d_k = query.size(-1)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    if attn_mask is not None:
+        scores = scores.masked_fill(attn_mask == 0, float('-inf'))
+    
+    if is_causal:
+        causal_mask = torch.triu(torch.ones(scores.size(-2), scores.size(-1), device=scores.device), diagonal=1).bool()
+        scores = scores.masked_fill(causal_mask, float('-inf'))
+    
+    attn = F.softmax(scores, dim=-1)
+    
+    if dropout_p > 0.0:
+        attn = F.dropout(attn, p=dropout_p)
+    
+    return torch.matmul(attn, value)
+
 
 
 class Attention(nn.Module):
@@ -89,6 +108,15 @@ class Attention(nn.Module):
         self.k_norm = nn.LayerNorm(self.n_heads * self.head_dim)
 
     @staticmethod
+    def reshape_for_broadcast1(freqs_cis, x):
+        ndim = x.ndim
+        assert 0 <= 1 < ndim
+        # assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+        _freqs_cis = freqs_cis[: x.shape[1]]
+        shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+        return _freqs_cis.view(*shape)
+    
+    @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
         ndim = x.ndim
         assert 0 <= 1 < ndim
@@ -97,16 +125,32 @@ class Attention(nn.Module):
         shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
         return _freqs_cis.view(*shape)
 
+
     @staticmethod
     def apply_rotary_emb(xq, xk, freqs_cis):
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-        xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-        freqs_cis_xq = Attention.reshape_for_broadcast(freqs_cis, xq_)
-        freqs_cis_xk = Attention.reshape_for_broadcast(freqs_cis, xk_)
+        seq_len, num_heads, head_dim = xq.shape[-3:]
+        
+        # Ensure xq and xk are reshaped for complex multiplication
+        xq = xq.view(*xq.shape[:-1], head_dim // 2, 2)
+        xq = torch.complex(xq[...,0], xq[...,1])
+        
+        xk = xk.view(*xk.shape[:-1], head_dim // 2, 2)
+        xk = torch.complex(xk[...,0], xk[...,1])
 
-        xq_out = torch.view_as_real(xq_ * freqs_cis_xq).flatten(3)
-        xk_out = torch.view_as_real(xk_ * freqs_cis_xk).flatten(3)
+        # Reshape and repeat freqs_cis for broadcasting
+        freqs_cis_xq = Attention.reshape_for_broadcast1(freqs_cis, xq)
+        freqs_cis_xk = Attention.reshape_for_broadcast1(freqs_cis, xk)
+        
+        # Calculate rotary embeddings
+        xq_rot = xq * freqs_cis_xq
+        xk_rot = xk * freqs_cis_xk
+        
+        # Flatten the last two dimensions back into the original head_dim
+        xq_out = torch.view_as_real(xq_rot).flatten(-2)
+        xk_out = torch.view_as_real(xk_rot).flatten(-2)
+
         return xq_out, xk_out
+
 
     def forward(self, x, freqs_cis):
         bsz, seqlen, _ = x.shape
@@ -125,7 +169,7 @@ class Attention(nn.Module):
         xq, xk = self.apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
         xq, xk = xq.to(dtype), xk.to(dtype)
 
-        output = F.scaled_dot_product_attention(
+        output = scaled_dot_product_attention(
             xq.permute(0, 2, 1, 3),
             xk.permute(0, 2, 1, 3),
             xv.permute(0, 2, 1, 3),

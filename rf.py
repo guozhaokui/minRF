@@ -2,6 +2,7 @@
 import argparse
 
 import torch
+import torch_npu
 
 
 class RF:
@@ -77,7 +78,7 @@ if __name__ == "__main__":
         channels = 3
         model = DiT_Llama(
             channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
-        ).cuda()
+        ).npu()
 
     else:
         dataset_name = "mnist"
@@ -92,7 +93,7 @@ if __name__ == "__main__":
         channels = 1
         model = DiT_Llama(
             channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
-        ).cuda()
+        ).npu()
 
     model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {model_size}, {model_size / 1e6}M")
@@ -110,7 +111,7 @@ if __name__ == "__main__":
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
-            x, c = x.cuda(), c.cuda()
+            x, c = x.npu(), c.npu()
             optimizer.zero_grad()
             loss, blsct = rf.forward(x, c)
             loss.backward()
@@ -131,10 +132,10 @@ if __name__ == "__main__":
 
         rf.model.eval()
         with torch.no_grad():
-            cond = torch.arange(0, 16).cuda() % 10
+            cond = torch.arange(0, 16).npu() % 10
             uncond = torch.ones_like(cond) * 10
 
-            init_noise = torch.randn(16, channels, 32, 32).cuda()
+            init_noise = torch.randn(16, channels, 32, 32).npu()
             images = rf.sample(init_noise, cond, uncond)
             # image sequences to gif
             gif = []
