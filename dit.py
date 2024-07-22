@@ -111,10 +111,9 @@ class Attention(nn.Module):
     def reshape_for_broadcast1(freqs_cis, x):
         ndim = x.ndim
         assert 0 <= 1 < ndim
-        # assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-        _freqs_cis = freqs_cis[: x.shape[1]]
+        assert freqs_cis.shape == (x.shape[1], x.shape[-1])
         shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-        return _freqs_cis.view(*shape)
+        return freqs_cis.view(*shape)
     
     @staticmethod
     def reshape_for_broadcast(freqs_cis, x):
@@ -129,26 +128,34 @@ class Attention(nn.Module):
     @staticmethod
     def apply_rotary_emb(xq, xk, freqs_cis):
         seq_len, num_heads, head_dim = xq.shape[-3:]
-        
-        # Ensure xq and xk are reshaped for complex multiplication
-        xq = xq.view(*xq.shape[:-1], head_dim // 2, 2)
-        xq = torch.complex(xq[...,0], xq[...,1])
-        
-        xk = xk.view(*xk.shape[:-1], head_dim // 2, 2)
-        xk = torch.complex(xk[...,0], xk[...,1])
 
-        # Reshape and repeat freqs_cis for broadcasting
-        freqs_cis_xq = Attention.reshape_for_broadcast1(freqs_cis, xq)
-        freqs_cis_xk = Attention.reshape_for_broadcast1(freqs_cis, xk)
-        
-        # Calculate rotary embeddings
-        xq_rot = xq * freqs_cis_xq
-        xk_rot = xk * freqs_cis_xk
-        
-        # Flatten the last two dimensions back into the original head_dim
-        xq_out = torch.view_as_real(xq_rot).flatten(-2)
-        xk_out = torch.view_as_real(xk_rot).flatten(-2)
+        # 将 xq 和 xk 重塑为 (..., head_dim//2, 2) 形状
+        xq_2d = xq.view(*xq.shape[:-1], head_dim // 2, 2)
+        xk_2d = xk.view(*xk.shape[:-1], head_dim // 2, 2)
 
+        # 将 freqs_cis 重塑为适合广播的形状
+        freqs_cis_xq = Attention.reshape_for_broadcast1(freqs_cis, xq_2d)
+        freqs_cis_xk = Attention.reshape_for_broadcast1(freqs_cis, xk_2d)
+
+        # 分离实部和虚部
+        freqs_cos = freqs_cis_xq[..., 0]
+        freqs_sin = freqs_cis_xq[..., 1]
+
+        # 执行旋转
+        xq_out = torch.empty_like(xq_2d)
+        xk_out = torch.empty_like(xk_2d)
+
+        # 实部
+        xq_out[..., 0] = xq_2d[..., 0] * freqs_cos - xq_2d[..., 1] * freqs_sin
+        xk_out[..., 0] = xk_2d[..., 0] * freqs_cos - xk_2d[..., 1] * freqs_sin
+
+        # 虚部
+        xq_out[..., 1] = xq_2d[..., 1] * freqs_cos + xq_2d[..., 0] * freqs_sin
+        xk_out[..., 1] = xk_2d[..., 1] * freqs_cos + xk_2d[..., 0] * freqs_sin
+
+        # 重塑回原始形状
+        xq_out = xq_out.view(*xq.shape)
+        xk_out = xk_out.view(*xk.shape)
         return xq_out, xk_out
 
 
