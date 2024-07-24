@@ -95,7 +95,7 @@ if __name__ == "__main__":
         num_classes = len(custom_dataset.dataset.classes)
         # 更新模型的类别数
         model = DiT_Llama(
-            channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=num_classes
+            channels, 32, dim=256, n_layers=1, n_heads=8, num_classes=num_classes
         ).cuda()        
     elif CIFAR:
         dataset_name = "cifar"
@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
     #wandb.init(project=f"rf_{dataset_name}")
 
-    for epoch in range(100):
+    for epoch in range(200):
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
@@ -198,3 +198,39 @@ if __name__ == "__main__":
             last_img.save(f"contents/sample_{epoch}_last.png")
 
         rf.model.train()
+
+    # 训练结束后保存最终模型
+    torch.save(model.state_dict(), f'model_{dataset_name}_final.pth')
+    print(f"Final model saved as model_{dataset_name}_final.pth")
+
+    #test
+    rf.model.eval()
+    with torch.no_grad():
+        cond = torch.arange(0, 16).cuda() % num_classes
+        cond = torch.tensor([0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1]).cuda()
+        uncond = torch.ones_like(cond) * num_classes
+
+        init_noise = torch.randn(16, channels, 32, 32).cuda()
+        images = rf.sample(init_noise, cond, uncond)
+        # image sequences to gif
+        gif = []
+        for image in images:
+            # unnormalize
+            image = image * 0.5 + 0.5
+            image = image.clamp(0, 1)
+            x_as_image = make_grid(image.float(), nrow=4)
+            img = x_as_image.permute(1, 2, 0).cpu().numpy()
+            img = (img * 255).astype(np.uint8)
+            gif.append(Image.fromarray(img))
+
+        gif[0].save(
+            f"contents/sample_test.gif",
+            save_all=True,
+            append_images=gif[1:],
+            duration=100,
+            loop=0,
+        )
+
+        last_img = gif[-1]
+        last_img.save(f"contents/sample_test_last.png")
+
