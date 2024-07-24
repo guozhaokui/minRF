@@ -2,7 +2,20 @@
 import argparse
 
 import torch
+from torchvision.datasets import ImageFolder
+from torch.utils.data import Dataset
 
+class CustomDataset(Dataset):
+    def __init__(self, root, transform=None):
+        self.dataset = ImageFolder(root, transform=transform)
+        
+    def __getitem__(self, index):
+        img, label = self.dataset[index]
+        return img, label
+    
+    def __len__(self):
+        return len(self.dataset)
+    
 
 class RF:
     def __init__(self, model, ln=True):
@@ -62,9 +75,31 @@ if __name__ == "__main__":
     parser.add_argument("--cifar", action="store_true")
     args = parser.parse_args()
     CIFAR = args.cifar
+    #MYDATA = args.mydata
+    MYDATA = True
 
-    if CIFAR:
+    if MYDATA:
+        dataset_name = "mydata"
+        channels=1
+        # 定义转换
+        transform = transforms.Compose([
+            transforms.Resize((32, 32)),  # 确保所有图像都是 32x32
+            transforms.ToTensor(),
+            transforms.Grayscale(num_output_channels=1),
+            transforms.Normalize((0.5,), (0.5,))
+        ])        
+        # 使用自定义数据集
+        custom_dataset = CustomDataset(root="data/mydata", transform=transform)
+        dataloader = DataLoader(custom_dataset, batch_size=1, shuffle=True, drop_last=True)        
+        # 获取类别数量
+        num_classes = len(custom_dataset.dataset.classes)
+        # 更新模型的类别数
+        model = DiT_Llama(
+            channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=num_classes
+        ).cuda()        
+    elif CIFAR:
         dataset_name = "cifar"
+        num_classes=10
         fdatasets = datasets.CIFAR10
         transform = transforms.Compose(
             [
@@ -74,6 +109,9 @@ if __name__ == "__main__":
                 transforms.Normalize((0.5,), (0.5,)),
             ]
         )
+        mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
+        dataloader = DataLoader(mnist, batch_size=256, shuffle=True, drop_last=True)
+
         channels = 3
         model = DiT_Llama(
             channels, 32, dim=256, n_layers=10, n_heads=8, num_classes=10
@@ -81,6 +119,7 @@ if __name__ == "__main__":
 
     else:
         dataset_name = "mnist"
+        num_classes=10
         fdatasets = datasets.MNIST
         transform = transforms.Compose(
             [
@@ -89,6 +128,8 @@ if __name__ == "__main__":
                 transforms.Normalize((0.5,), (0.5,)),
             ]
         )
+        mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
+        dataloader = DataLoader(mnist, batch_size=256, shuffle=True, drop_last=True)
         channels = 1
         model = DiT_Llama(
             channels, 32, dim=64, n_layers=6, n_heads=4, num_classes=10
@@ -101,10 +142,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=5e-4)
     criterion = torch.nn.MSELoss()
 
-    mnist = fdatasets(root="./data", train=True, download=True, transform=transform)
-    dataloader = DataLoader(mnist, batch_size=256, shuffle=True, drop_last=True)
-
-    wandb.init(project=f"rf_{dataset_name}")
+    #wandb.init(project=f"rf_{dataset_name}")
 
     for epoch in range(100):
         lossbin = {i: 0 for i in range(10)}
@@ -116,7 +154,7 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-            wandb.log({"loss": loss.item()})
+            #wandb.log({"loss": loss.item()})
 
             # count based on t
             for t, l in blsct:
@@ -127,12 +165,13 @@ if __name__ == "__main__":
         for i in range(10):
             print(f"Epoch: {epoch}, {i} range loss: {lossbin[i] / losscnt[i]}")
 
-        wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
+        #wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
 
+        #一个epoch完了，评估一下
         rf.model.eval()
         with torch.no_grad():
-            cond = torch.arange(0, 16).cuda() % 10
-            uncond = torch.ones_like(cond) * 10
+            cond = torch.arange(0, 16).cuda() % num_classes
+            uncond = torch.ones_like(cond) * num_classes
 
             init_noise = torch.randn(16, channels, 32, 32).cuda()
             images = rf.sample(init_noise, cond, uncond)
