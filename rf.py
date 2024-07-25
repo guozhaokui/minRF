@@ -90,7 +90,7 @@ if __name__ == "__main__":
         ])        
         # 使用自定义数据集
         custom_dataset = CustomDataset(root="data/mydata", transform=transform)
-        dataloader = DataLoader(custom_dataset, batch_size=1, shuffle=True, drop_last=True)        
+        dataloader = DataLoader(custom_dataset, batch_size=64, shuffle=True, drop_last=True)        
         # 获取类别数量
         num_classes = len(custom_dataset.dataset.classes)
         # 更新模型的类别数
@@ -144,7 +144,9 @@ if __name__ == "__main__":
 
     #wandb.init(project=f"rf_{dataset_name}")
 
-    for epoch in range(200):
+    epochs = 10500
+    saveStep=200
+    for epoch in range(epochs):
         lossbin = {i: 0 for i in range(10)}
         losscnt = {i: 1e-6 for i in range(10)}
         for i, (x, c) in tqdm(enumerate(dataloader)):
@@ -161,47 +163,47 @@ if __name__ == "__main__":
                 lossbin[int(t * 10)] += l
                 losscnt[int(t * 10)] += 1
 
-        # log
-        for i in range(10):
-            print(f"Epoch: {epoch}, {i} range loss: {lossbin[i] / losscnt[i]}")
 
         #wandb.log({f"lossbin_{i}": lossbin[i] / losscnt[i] for i in range(10)})
 
         #一个epoch完了，评估一下
-        rf.model.eval()
-        with torch.no_grad():
-            cond = torch.arange(0, 16).cuda() % num_classes
-            uncond = torch.ones_like(cond) * num_classes
+        if epoch%saveStep ==0:
+            # log
+            for i in range(10):
+                print(f"Epoch: {epoch}, {i} range loss: {lossbin[i] / losscnt[i]}")
+            rf.model.eval()
+            with torch.no_grad():
+                cond = torch.arange(0, 16).cuda() % num_classes
+                uncond = torch.ones_like(cond) * num_classes
 
-            init_noise = torch.randn(16, channels, 32, 32).cuda()
-            images = rf.sample(init_noise, cond, uncond)
-            # image sequences to gif
-            gif = []
-            for image in images:
-                # unnormalize
-                image = image * 0.5 + 0.5
-                image = image.clamp(0, 1)
-                x_as_image = make_grid(image.float(), nrow=4)
-                img = x_as_image.permute(1, 2, 0).cpu().numpy()
-                img = (img * 255).astype(np.uint8)
-                gif.append(Image.fromarray(img))
+                init_noise = torch.randn(16, channels, 32, 32).cuda()
+                images = rf.sample(init_noise, cond, uncond)
+                # image sequences to gif
+                gif = []
+                for image in images:
+                    # unnormalize
+                    image = image * 0.5 + 0.5
+                    image = image.clamp(0, 1)
+                    x_as_image = make_grid(image.float(), nrow=4)
+                    img = x_as_image.permute(1, 2, 0).cpu().numpy()
+                    img = (img * 255).astype(np.uint8)
+                    gif.append(Image.fromarray(img))
 
-            gif[0].save(
-                f"contents/sample_{epoch}.gif",
-                save_all=True,
-                append_images=gif[1:],
-                duration=100,
-                loop=0,
-            )
+                gif[0].save(
+                    f"contents/sample_{epoch}.gif",
+                    save_all=True,
+                    append_images=gif[1:],
+                    duration=100,
+                    loop=0,
+                )
 
-            last_img = gif[-1]
-            last_img.save(f"contents/sample_{epoch}_last.png")
+                last_img = gif[-1]
+                last_img.save(f"contents/sample_{epoch}_last.png")
 
         rf.model.train()
 
     # 训练结束后保存最终模型
-    torch.save(model.state_dict(), f'model_{dataset_name}_final.pth')
-    print(f"Final model saved as model_{dataset_name}_final.pth")
+    torch.save(model.state_dict(), f'model_{dataset_name}_{epochs}_final.pth')
 
     #test
     rf.model.eval()

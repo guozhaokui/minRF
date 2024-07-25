@@ -8,9 +8,9 @@ from PIL import Image
 import numpy as np
 
 channels=1
-num_classes=2
+num_classes=4
 model = DiT_Llama(channels, 32, dim=256, n_layers=1, n_heads=8, num_classes=num_classes).cuda()
-model.load_state_dict(torch.load(f'model_mydata_final.pth'))
+model.load_state_dict(torch.load(f'model_mydata_10500_final.pth'))
 rf = RF(model)
 rf.model.eval()
 with torch.no_grad():
